@@ -1,5 +1,5 @@
 from django.utils import timezone
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes,authentication_classes
 from rest_framework.response import Response
 from rest_framework.authtoken.serializers import AuthTokenSerializer
 from rest_framework import generics, permissions
@@ -12,13 +12,13 @@ from django.contrib.auth import logout
 from rest_framework.permissions import IsAuthenticated
 from django.contrib.auth.decorators import login_required
 from rest_framework_simplejwt.authentication import JWTAuthentication
-from rest_framework.decorators import api_view, authentication_classes, permission_classes
 from rest_framework import status
 from rest_framework.views import APIView
 from django.contrib.auth import authenticate
-from .serializers import UserSerializer
-from rest_framework.views import APIView
-
+from decimal import Decimal
+from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework import serializers
+from .models import Book
 
 
 
@@ -47,6 +47,22 @@ def serialize_user(user):
         "last_name": user.last_name
     }
 
+class BookList(APIView):
+    def post(self, request):
+        serializer = BookSerializer(data=request.data)
+
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class BookSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Book
+        fields = '__all__'
+
 @api_view(['POST'])
 def login(request):
     serializer = AuthTokenSerializer(data=request.data)
@@ -72,7 +88,6 @@ def logout(request):
     except Exception:
         return Response({'message': 'Failed to logout'}, status=status.HTTP_400_BAD_REQUEST)
 
-from rest_framework_simplejwt.tokens import RefreshToken
 
 @api_view(['POST'])
 def register(request):
@@ -121,32 +136,38 @@ class UserBookRentalsListView(generics.ListAPIView):
         return Response(serializer.data)
 
 
-
 @api_view(['POST'])
 @authentication_classes([JWTAuthentication])
 @permission_classes([IsAuthenticated])
 def rent_book(request, book_id):
-    # Check if user already has 3 books rented
-    user_rentals = Rental.objects.filter(user=request.user, returned=False)
-    if user_rentals.count() >= 3:
-        return Response({"error": "User has reached the rental limit."}, status=400)
     try:
         book = Book.objects.get(id=book_id)
     except Book.DoesNotExist:
-        return Response({"error": "Book not found."}, status=404)
-
+        return Response({"error": "Book not found."}, status=status.HTTP_404_NOT_FOUND)
+    
     if not book.available:
-        return Response({"error": "Book is already rented."}, status=400)
-
+        return Response({"error": "Book is already rented."}, status=status.HTTP_400_BAD_REQUEST)
+    
+    user_rentals = Rental.objects.filter(user=request.user, returned=False)
+    if user_rentals.count() >= 3:
+        return Response({"error": "User has reached the rental limit."}, status=status.HTTP_400_BAD_REQUEST)
+    
+    rental_days = request.data.get("rental_days", 1)
+    try:
+        rental_days = int(rental_days)
+    except ValueError:
+        return Response({"error": "Invalid rental days value."}, status=status.HTTP_400_BAD_REQUEST)
+    
     rental_date = timezone.now()
-    return_date = rental_date + timezone.timedelta(days=3)
+    return_date = rental_date + timezone.timedelta(days=rental_days)
     rental = Rental(book=book, user=request.user, rental_date=rental_date, return_date=return_date, returned=False)
     rental.save()
-
+    
     book.available = False
     book.save()
-
-    return Response({"success": f"Book {book.title} rented successfully."}, status=200)
+    
+    rental_price = rental_days * book.price
+    return Response({"success": f"Book {book.title} rented successfully.", "rental_price": str(rental_price)}, status=status.HTTP_200_OK)
 
 
 @api_view(['PUT'])
